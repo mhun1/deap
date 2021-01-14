@@ -190,15 +190,16 @@ class Primitive(object):
         >>> pr.format(1, 2)
         'mul(1, 2)'
     """
-    __slots__ = ('name', 'arity', 'args', 'ret', 'seq')
+    __slots__ = ('name', 'arity', 'args', 'ret', 'seq', 'weight')
 
-    def __init__(self, name, args, ret):
+    def __init__(self, name, args, ret, weight=1):
         self.name = name
         self.arity = len(args)
         self.args = args
         self.ret = ret
         args = ", ".join(map("{{{0}}}".format, range(self.arity)))
         self.seq = "{name}({args})".format(name=self.name, args=args)
+        self.weight = weight
 
     def format(self, *args):
         return self.seq.format(*args)
@@ -215,13 +216,14 @@ class Terminal(object):
     """Class that encapsulates terminal primitive in expression. Terminals can
     be values or 0-arity functions.
     """
-    __slots__ = ('name', 'value', 'ret', 'conv_fct')
+    __slots__ = ('name', 'value', 'ret', 'conv_fct','weight')
 
-    def __init__(self, terminal, symbolic, ret):
+    def __init__(self, terminal, symbolic, ret, weight=1):
         self.ret = ret
         self.value = terminal
         self.name = str(terminal)
         self.conv_fct = str if symbolic else repr
+        self.weight = weight
 
     @property
     def arity(self):
@@ -279,9 +281,12 @@ class PrimitiveSetTyped(object):
         for i, type_ in enumerate(in_types):
             arg_str = "{prefix}{index}".format(prefix=prefix, index=i)
             self.arguments.append(arg_str)
-            term = Terminal(arg_str, True, type_)
+            term = Terminal(arg_str, True, type_, weight=1)
             self._add(term)
             self.terms_count += 1
+
+        print(self.ret)
+        print(self.primitives)
 
     def renameArguments(self, **kargs):
         """Rename function arguments with new names from *kargs*.
@@ -292,6 +297,7 @@ class PrimitiveSetTyped(object):
                 self.arguments[i] = new_name
                 self.mapping[new_name] = self.mapping[old_name]
                 self.mapping[new_name].value = new_name
+                self.mapping[new_name].weight = kargs["weight"]
                 del self.mapping[old_name]
 
     def _add(self, prim):
@@ -304,6 +310,7 @@ class PrimitiveSetTyped(object):
                             if item not in new_list:
                                 new_list.append(item)
                 dict_[ret_type] = new_list
+
 
         addType(self.primitives, prim.ret)
         addType(self.terminals, prim.ret)
@@ -321,7 +328,7 @@ class PrimitiveSetTyped(object):
             if issubclass(prim.ret, type_):
                 dict_[type_].append(prim)
 
-    def addPrimitive(self, primitive, in_types, ret_type, name=None):
+    def addPrimitive(self, primitive, in_types, ret_type, name=None, weight=1):
         """Add a primitive to the set.
 
         :param primitive: callable object or a function.
@@ -332,7 +339,7 @@ class PrimitiveSetTyped(object):
         """
         if name is None:
             name = primitive.__name__
-        prim = Primitive(name, in_types, ret_type)
+        prim = Primitive(name, in_types, ret_type, weight=weight)
 
         assert name not in self.context or \
                self.context[name] is primitive, \
@@ -344,7 +351,7 @@ class PrimitiveSetTyped(object):
         self.context[prim.name] = primitive
         self.prims_count += 1
 
-    def addTerminal(self, terminal, ret_type, name=None):
+    def addTerminal(self, terminal, ret_type, name=None,weight=1):
         """Add a terminal to the set. Terminals can be named
         using the optional *name* argument. This should be
         used : to define named constant (i.e.: pi); to speed the
@@ -374,7 +381,7 @@ class PrimitiveSetTyped(object):
             # To support True and False terminals with Python 2.
             self.context[str(terminal)] = terminal
 
-        prim = Terminal(terminal, symbolic, ret_type)
+        prim = Terminal(terminal, symbolic, ret_type, weight=weight)
         self._add(prim)
         self.terms_count += 1
 
@@ -436,18 +443,18 @@ class PrimitiveSet(PrimitiveSetTyped):
         args = [__type__] * arity
         PrimitiveSetTyped.__init__(self, name, args, __type__, prefix)
 
-    def addPrimitive(self, primitive, arity, name=None):
+    def addPrimitive(self, primitive, arity, name=None, weight=1):
         """Add primitive *primitive* with arity *arity* to the set.
         If a name *name* is provided, it will replace the attribute __name__
         attribute to represent/identify the primitive.
         """
         assert arity > 0, "arity should be >= 1"
         args = [__type__] * arity
-        PrimitiveSetTyped.addPrimitive(self, primitive, args, __type__, name)
+        PrimitiveSetTyped.addPrimitive(self, primitive, args, __type__, name, weight=weight)
 
-    def addTerminal(self, terminal, name=None):
+    def addTerminal(self, terminal, name=None, weight=1):
         """Add a terminal to the set."""
-        PrimitiveSetTyped.addTerminal(self, terminal, __type__, name)
+        PrimitiveSetTyped.addTerminal(self, terminal, __type__, name, weight=weight)
 
     def addEphemeralConstant(self, name, ephemeral):
         """Add an ephemeral constant to the set."""
@@ -605,12 +612,15 @@ def generate(pset, min_, max_, condition, type_=None):
         type_ = pset.ret
     expr = []
     height = random.randint(min_, max_)
+    term_weights = [i.weight for i in pset.terminals[type_]]
+    prim_weights = [i.weight for i in pset.primitives[type_]]
+
     stack = [(0, type_)]
     while len(stack) != 0:
         depth, type_ = stack.pop()
         if condition(height, depth):
             try:
-                term = random.choice(pset.terminals[type_])
+                term = random.choices(pset.terminals[type_])
             except IndexError:
                 _, _, traceback = sys.exc_info()
                 raise IndexError, "The gp.generate function tried to add " \
@@ -624,9 +634,9 @@ def generate(pset, min_, max_, condition, type_=None):
                 prim = random.choice(pset.primitives[type_])
             except IndexError:
                 _, _, traceback = sys.exc_info()
-                raise IndexError, "The gp.generate function tried to add " \
-                                  "a primitive of type '%s', but there is " \
-                                  "none available." % (type_,), traceback
+                raise IndexError("The gp.generate function tried to add " \
+                                 "a primitive of type '%s', but there is " \
+                                 "none available." % (type_,)).with_traceback(traceback)
             expr.append(prim)
             for arg in reversed(prim.args):
                 stack.append((depth + 1, arg))
